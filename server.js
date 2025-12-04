@@ -15,7 +15,7 @@ const app = express();
 const PORT = process.env.PORT || 3001;
 
 // MongoDB Connection
-const MONGODB_URI = 'mongodb+srv://admin:Test12345@clusteradmin.qrlarug.mongodb.net/portfolio?retryWrites=true&w=majority';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://admin:Test12345@clusteradmin.qrlarug.mongodb.net/portfolio?retryWrites=true&w=majority';
 
 mongoose.connect(MONGODB_URI, {
   useNewUrlParser: true,
@@ -34,8 +34,8 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
 // Create uploads directories if they don't exist
 const uploadsDir = path.join(__dirname, 'public', 'uploads');
@@ -51,6 +51,11 @@ const newsDir = path.join(uploadsDir, 'news');
 
 // Serve static files from uploads directory
 app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
@@ -385,15 +390,26 @@ app.get('/api/admin-messages', async (req, res) => {
   }
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Server is running on port ${PORT}`);
-  console.log(`Accessible from network at: http://YOUR_IP:${PORT}`);
-}).on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.error(`Port ${PORT} is already in use. Please kill the process using this port or change the PORT in server.js`);
-    process.exit(1);
-  } else {
-    throw err;
-  }
+// Global error handler
+app.use((err, req, res, next) => {
+  const status = err.status || 500;
+  res.status(status).json({ error: err.message || 'Internal Server Error' });
 });
 
+// Vercel serverless compatibility: export app when running on Vercel
+if (process.env.VERCEL) {
+  module.exports = app;
+} else {
+  const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server is running on port ${PORT}`);
+    console.log(`Accessible from network at: http://YOUR_IP:${PORT}`);
+  });
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`Port ${PORT} is already in use. Please kill the process using this port or change the PORT in server.js`);
+      process.exit(1);
+    } else {
+      throw err;
+    }
+  });
+}
