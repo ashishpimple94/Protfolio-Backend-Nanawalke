@@ -4,6 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 const mongoose = require('mongoose');
+const cloudinary = require('cloudinary').v2;
 
 const Photo = require('./models/Photo');
 const News = require('./models/News');
@@ -13,6 +14,7 @@ const AdminMessage = require('./models/AdminMessage');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
+const USE_CLOUD_UPLOADS = process.env.USE_CLOUD_UPLOADS === 'true' || !!process.env.VERCEL;
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://admin:Test12345@clusteradmin.qrlarug.mongodb.net/portfolio?retryWrites=true&w=majority';
@@ -37,20 +39,37 @@ app.use(cors({
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
-// Create uploads directories if they don't exist
+// Create uploads directories if they don't exist (used in local mode)
 const uploadsDir = path.join(__dirname, 'public', 'uploads');
 const photosDir = path.join(uploadsDir, 'photos');
 const videosDir = path.join(uploadsDir, 'videos');
 const newsDir = path.join(uploadsDir, 'news');
 
-[photosDir, videosDir, newsDir].forEach(dir => {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-  }
-});
+if (!USE_CLOUD_UPLOADS) {
+  [photosDir, videosDir, newsDir].forEach(dir => {
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  });
+}
 
-// Serve static files from uploads directory
-app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
+// Serve static files from uploads directory (local mode only)
+if (!USE_CLOUD_UPLOADS) {
+  app.use('/uploads', express.static(path.join(__dirname, 'public', 'uploads')));
+}
+
+// Configure Cloudinary (cloud mode)
+if (USE_CLOUD_UPLOADS) {
+  if (process.env.CLOUDINARY_URL) {
+    cloudinary.config({ url: process.env.CLOUDINARY_URL });
+  } else if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
+    cloudinary.config({
+      cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+      api_key: process.env.CLOUDINARY_API_KEY,
+      api_secret: process.env.CLOUDINARY_API_SECRET
+    });
+  }
+}
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -58,28 +77,23 @@ app.get('/api/health', (req, res) => {
 });
 
 // Configure multer for file uploads
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    const type = req.body.type || 'photos';
-    let uploadPath;
-    
-    if (type === 'photos') {
-      uploadPath = photosDir;
-    } else if (type === 'videos') {
-      uploadPath = videosDir;
-    } else if (type === 'news') {
-      uploadPath = newsDir;
-    } else {
-      uploadPath = photosDir;
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: (req, file, cb) => {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    cb(null, uniqueSuffix + path.extname(file.originalname));
-  }
-});
+const storage = USE_CLOUD_UPLOADS
+  ? multer.memoryStorage()
+  : multer.diskStorage({
+      destination: (req, file, cb) => {
+        const type = req.body.type || 'photos';
+        let uploadPath;
+        if (type === 'photos') uploadPath = photosDir;
+        else if (type === 'videos') uploadPath = videosDir;
+        else if (type === 'news') uploadPath = newsDir;
+        else uploadPath = photosDir;
+        cb(null, uploadPath);
+      },
+      filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+        cb(null, uniqueSuffix + path.extname(file.originalname));
+      }
+    });
 
 const upload = multer({
   storage: storage,
@@ -194,41 +208,50 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
-    
-    const fileUrl = `/uploads/${req.body.type}/${req.file.filename}`;
     const type = req.body.type;
-    
-    // Save to MongoDB based on type
-    let savedItem;
-    if (type === 'photos') {
-      savedItem = await Photo.create({
-        filename: req.file.filename,
-        src: fileUrl
+
+    if (USE_CLOUD_UPLOADS) {
+      const folder = `uploads/${type || 'photos'}`;
+      const resourceType = type === 'videos' ? 'video' : 'image';
+      const title = req.body.title || (type === 'news' ? 'News' : type === 'videos' ? 'Video' : undefined);
+
+      const streamResult = await new Promise((resolve, reject) => {
+        const uploadOptions = { folder, resource_type: resourceType };
+        const stream = cloudinary.uploader.upload_stream(uploadOptions, (error, result) => {
+          if (error) return reject(error);
+          resolve(result);
+        });
+        stream.end(req.file.buffer);
       });
-    } else if (type === 'news') {
-      savedItem = await News.create({
-        filename: req.file.filename,
-        src: fileUrl,
-        title: req.body.title || 'News'
+
+      let savedItem;
+      if (type === 'photos') {
+        savedItem = await Photo.create({ filename: streamResult.public_id, src: streamResult.secure_url });
+      } else if (type === 'news') {
+        savedItem = await News.create({ filename: streamResult.public_id, src: streamResult.secure_url, title });
+      } else if (type === 'videos') {
+        savedItem = await Video.create({ filename: streamResult.public_id, src: streamResult.secure_url, title, isExternal: false });
+      }
+
+      return res.json({
+        message: 'File uploaded successfully',
+        file: { id: savedItem._id, filename: savedItem.filename, url: savedItem.src, type }
       });
-    } else if (type === 'videos') {
-      savedItem = await Video.create({
-        filename: req.file.filename,
-        src: fileUrl,
-        title: req.body.title || 'Video',
-        isExternal: false
+    } else {
+      const fileUrl = `/uploads/${req.body.type}/${req.file.filename}`;
+      let savedItem;
+      if (type === 'photos') {
+        savedItem = await Photo.create({ filename: req.file.filename, src: fileUrl });
+      } else if (type === 'news') {
+        savedItem = await News.create({ filename: req.file.filename, src: fileUrl, title: req.body.title || 'News' });
+      } else if (type === 'videos') {
+        savedItem = await Video.create({ filename: req.file.filename, src: fileUrl, title: req.body.title || 'Video', isExternal: false });
+      }
+      return res.json({
+        message: 'File uploaded successfully',
+        file: { id: savedItem._id, filename: req.file.filename, url: fileUrl, type }
       });
     }
-    
-    res.json({
-      message: 'File uploaded successfully',
-      file: {
-        id: savedItem._id,
-        filename: req.file.filename,
-        url: fileUrl,
-        type: type
-      }
-    });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -278,32 +301,29 @@ app.post('/api/videos/youtube', async (req, res) => {
 app.delete('/api/delete/:type/:filename', async (req, res) => {
   try {
     const { type, filename } = req.params;
-    let filePath;
-    let deletedItem;
-    
-    if (type === 'photos') {
-      filePath = path.join(photosDir, filename);
-      deletedItem = await Photo.findOneAndDelete({ filename: filename });
-    } else if (type === 'videos') {
-      filePath = path.join(videosDir, filename);
-      deletedItem = await Video.findOneAndDelete({ filename: filename });
-    } else if (type === 'news') {
-      filePath = path.join(newsDir, filename);
-      deletedItem = await News.findOneAndDelete({ filename: filename });
+    let item;
+    if (type === 'photos') item = await Photo.findOne({ filename });
+    else if (type === 'videos') item = await Video.findOne({ filename });
+    else if (type === 'news') item = await News.findOne({ filename });
+    else return res.status(400).json({ error: 'Invalid type' });
+
+    if (!item) return res.status(404).json({ error: 'File not found in database' });
+
+    if (USE_CLOUD_UPLOADS && item.src && item.src.includes('res.cloudinary.com')) {
+      const resourceType = type === 'videos' ? 'video' : 'image';
+      await cloudinary.uploader.destroy(item.filename, { resource_type: resourceType });
     } else {
-      return res.status(400).json({ error: 'Invalid type' });
+      const filePath = path.join(type === 'photos' ? photosDir : type === 'videos' ? videosDir : newsDir, item.filename);
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
     }
-    
-    // Delete from file system if a physical file exists
-    if (filePath && fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
-    
-    if (deletedItem) {
-      res.json({ message: 'File deleted successfully' });
-    } else {
-      res.status(404).json({ error: 'File not found in database' });
-    }
+
+    if (type === 'photos') await Photo.deleteOne({ _id: item._id });
+    else if (type === 'videos') await Video.deleteOne({ _id: item._id });
+    else if (type === 'news') await News.deleteOne({ _id: item._id });
+
+    res.json({ message: 'File deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
