@@ -15,6 +15,7 @@ const AdminMessage = require('./models/AdminMessage');
 const app = express();
 const PORT = process.env.PORT || 3001;
 const USE_CLOUD_UPLOADS = process.env.USE_CLOUD_UPLOADS === 'true' || !!process.env.VERCEL;
+const isDbConnected = () => mongoose.connection && mongoose.connection.readyState === 1;
 
 // MongoDB Connection
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://admin:Test12345@clusteradmin.qrlarug.mongodb.net/portfolio?retryWrites=true&w=majority';
@@ -73,7 +74,7 @@ if (USE_CLOUD_UPLOADS) {
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok' });
+  res.status(200).json({ status: 'ok', db: isDbConnected() ? 'connected' : 'disconnected' });
 });
 
 // Configure multer for file uploads
@@ -156,6 +157,9 @@ const buildYouTubeEmbedUrl = (videoId) => {
 // Get all photos
 app.get('/api/photos', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json([]);
+    }
     const photos = await Photo.find().sort({ uploadedAt: -1 });
     const formattedPhotos = photos.map((photo, index) => ({
       id: photo._id,
@@ -171,6 +175,9 @@ app.get('/api/photos', async (req, res) => {
 // Get all news
 app.get('/api/news', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json([]);
+    }
     const news = await News.find().sort({ uploadedAt: -1 });
     const formattedNews = news.map((item, index) => ({
       id: item._id,
@@ -187,6 +194,9 @@ app.get('/api/news', async (req, res) => {
 // Get all videos
 app.get('/api/videos', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json([]);
+    }
     const videos = await Video.find().sort({ uploadedAt: -1 });
     const formattedVideos = videos.map((video, index) => ({
       id: video._id,
@@ -209,6 +219,9 @@ app.post('/api/upload', upload.single('file'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
     const type = req.body.type;
+    if (!isDbConnected()) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
 
     if (USE_CLOUD_UPLOADS) {
       const folder = `uploads/${type || 'photos'}`;
@@ -264,7 +277,10 @@ app.post('/api/videos/youtube', async (req, res) => {
     if (!url || !url.trim()) {
       return res.status(400).json({ error: 'YouTube URL is required' });
     }
-
+    if (!isDbConnected()) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
+    
     const videoId = extractYouTubeId(url.trim());
     if (!videoId) {
       return res.status(400).json({ error: 'Invalid YouTube URL' });
@@ -301,6 +317,9 @@ app.post('/api/videos/youtube', async (req, res) => {
 app.delete('/api/delete/:type/:filename', async (req, res) => {
   try {
     const { type, filename } = req.params;
+    if (!isDbConnected()) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
     let item;
     if (type === 'photos') item = await Photo.findOne({ filename });
     else if (type === 'videos') item = await Video.findOne({ filename });
@@ -332,6 +351,9 @@ app.delete('/api/delete/:type/:filename', async (req, res) => {
 // Get all suggestions
 app.get('/api/suggestions', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json([]);
+    }
     const suggestions = await Suggestion.find().sort({ submittedAt: -1 });
     res.json(suggestions);
   } catch (error) {
@@ -346,7 +368,9 @@ app.post('/api/suggestions', async (req, res) => {
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
     }
-    
+    if (!isDbConnected()) {
+      return res.status(503).json({ error: 'Database not connected' });
+    }
     const suggestion = await Suggestion.create({
       message: message.trim()
     });
@@ -363,6 +387,9 @@ app.post('/api/suggestions', async (req, res) => {
 // Get active admin message
 app.get('/api/admin-message', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json(null);
+    }
     const adminMessage = await AdminMessage.findOne({ isActive: true }).sort({ createdAt: -1 });
     if (adminMessage) {
       res.json(adminMessage);
@@ -380,6 +407,9 @@ app.post('/api/admin-message', async (req, res) => {
     const { message } = req.body;
     if (!message || !message.trim()) {
       return res.status(400).json({ error: 'Message is required' });
+    }
+    if (!isDbConnected()) {
+      return res.status(503).json({ error: 'Database not connected' });
     }
     
     // Deactivate all previous messages
@@ -403,6 +433,9 @@ app.post('/api/admin-message', async (req, res) => {
 // Get all admin messages
 app.get('/api/admin-messages', async (req, res) => {
   try {
+    if (!isDbConnected()) {
+      return res.json([]);
+    }
     const messages = await AdminMessage.find().sort({ createdAt: -1 });
     res.json(messages);
   } catch (error) {
