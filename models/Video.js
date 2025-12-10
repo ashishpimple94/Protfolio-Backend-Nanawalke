@@ -1,6 +1,11 @@
 const mongoose = require('mongoose');
 
 const videoSchema = new mongoose.Schema({
+  userId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User',
+    required: false // Optional for backward compatibility
+  },
   filename: {
     type: String
   },
@@ -11,6 +16,17 @@ const videoSchema = new mongoose.Schema({
   title: {
     type: String,
     default: 'Video'
+  },
+  description: {
+    type: String,
+    default: ''
+  },
+  tags: [{
+    type: String
+  }],
+  category: {
+    type: String,
+    default: 'videos'
   },
   isExternal: {
     type: Boolean,
@@ -26,5 +42,3 @@ const videoSchema = new mongoose.Schema({
 });
 
 module.exports = mongoose.model('Video', videoSchema);
-
-
